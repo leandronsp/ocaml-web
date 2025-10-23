@@ -1,19 +1,64 @@
-open Unix
+let ( let* ) = Lwt.bind
 
-let () = 
-        let socket = socket PF_INET SOCK_STREAM 0 in
-        let _ = bind socket (ADDR_INET (inet_addr_any, 8080)) in
-        let _ = listen socket 5 in
+module Pages = struct
+  let index (todos : (int * string) list) =
+    let todos =
+      List.fold_left
+        (fun str (_, todo) -> Format.asprintf "%s<li>%s</li>" str todo)
+        ""
+        todos
+    in
+    Format.asprintf "<ul>%s</ul>" todos
+    ^ {|
+  <form action="/todo" method="post">
+  <label for="task">Task</label>
+  <input id="task" name="task" type="text" />
+  <input type="submit" value="Create" />
+  </form>
+  |}
+  ;;
+end
 
-        let _ = print_endline "Server is listening on port 8080" in
+module Queries = struct
+  open Caqti_template.Create
 
-        (* Accept connections in a loop *)
+  let create_todo = static T.(string -->. unit) "INSERT INTO todos (task) VALUES (?)"
+  let list_todo = static T.(unit -->* t2 int string) "SELECT * FROM todos"
+end
 
-        let rec accept_connections () =
-            let (client_socket, _) = accept socket in
-            let _ = print_endline "Accepted a connection" in
-            let response : string = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 15\r\n\r\nHello, client!\n" in
-            let response_length = String.length response in
-            let _ = write_substring client_socket response 0 response_length in
-            let _ = close client_socket in accept_connections () in
-        accept_connections ()
+module Routes = struct
+  let index =
+    Dream.get "/" (fun req ->
+      Dream.sql req (fun conn ->
+        let module Conn = (val conn : Caqti_lwt.CONNECTION) in
+        let* result = Conn.collect_list Queries.list_todo () in
+        let todos = Result.get_ok result in
+        Dream.html (Pages.index todos)))
+  ;;
+
+  let create_todo =
+    Dream.post "/todo" (fun req ->
+      let* form_result = Dream.form ~csrf:false req in
+      let form_data =
+        match form_result with
+        | `Ok v -> v
+        | _ -> []
+      in
+      Dream.sql req (fun conn ->
+        let module Conn = (val conn : Caqti_lwt.CONNECTION) in
+        let task_opt = List.assoc_opt "task" form_data in
+        let* result =
+          Conn.exec Queries.create_todo (Option.value ~default:"ERRO" task_opt)
+        in
+        let () = Result.get_ok result in
+        Dream.redirect req "/"))
+  ;;
+end
+
+let () =
+  let router = Dream.router [ Routes.index; Routes.create_todo ] in
+  Dream.run
+    (Dream.sql_pool
+       "postgresql://postgres:12344@localhost:5432/ocamlweb"
+       (Dream.logger router))
+;;

@@ -1,4 +1,4 @@
 (executable
  (public_name ocaml-web)
  (name main)
- (libraries ocaml_web unix))
+ (libraries ocaml_web unix dream lwt caqti caqti-lwt.unix caqti-driver-postgresql))
